@@ -17,6 +17,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
+use borsh::{BorshSerialize, BorshDeserialize};
 
 #[derive(Debug, StructOpt)]
 struct Options {
@@ -28,25 +29,25 @@ struct Options {
     web_server: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(BorshSerialize, BorshDeserialize)]
 struct PutRequest {
     k: String,
-    v: String,
+    v: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum Message {
-    Insert { key: String, value: String },
+    Insert { key: String, value: Vec<u8> },
 }
 
 #[derive(Clone)]
-struct HashStore(Arc<RwLock<HashMap<String, String>>>);
+struct HashStore(Arc<RwLock<HashMap<String, Vec<u8>>>>);
 
 impl HashStore {
     fn new() -> Self {
         Self(Arc::new(RwLock::new(HashMap::new())))
     }
-    fn get(&self, key: String) -> Option<String> {
+    fn get(&self, key: String) -> Option<Vec<u8>> {
         self.0.read().unwrap().get(&key).cloned()
     }
 }
@@ -54,13 +55,12 @@ impl HashStore {
 #[async_trait]
 impl Store for HashStore {
     async fn apply(&mut self, message: &[u8]) -> RaftResult<Vec<u8>> {
-        let message: Message = deserialize(message).unwrap();
+        let message: Message =  BorshDeserialize::try_from_slice(message).unwrap();
         let message: Vec<u8> = match message {
             Message::Insert { key, value } => {
                 let mut db = self.0.write().unwrap();
                 db.insert(key.clone(), value.clone());
-                info!("inserted: ({}, {})", key, value);
-                serialize(&value).unwrap()
+                value
             }
         };
         Ok(message)
@@ -71,7 +71,7 @@ impl Store for HashStore {
     }
 
     async fn restore(&mut self, snapshot: &[u8]) -> RaftResult<()> {
-        let new: HashMap<String, String> = deserialize(snapshot).unwrap();
+        let new: HashMap<String, Vec<u8>> = deserialize(snapshot).unwrap();
         let mut db = self.0.write().unwrap();
         let _ = std::mem::replace(&mut *db, new);
         Ok(())
@@ -90,13 +90,13 @@ fn with_store(store: HashStore) -> impl Filter<Extract = (HashStore,), Error = I
 
 async fn put(
     mailbox: Arc<Mailbox>,
-    body: PutRequest,
+    body: bytes::Bytes,
 ) -> Result<impl warp::Reply, Infallible> {
-    let message = Message::Insert { key: body.k, value: body.v };
-    let message = serialize(&message).unwrap();
-    let result = mailbox.send(message).await.unwrap();
-    let result: String = deserialize(&result).unwrap();
-    Ok(reply::json(&result))
+    let request: PutRequest = BorshDeserialize::try_from_slice(&body).unwrap();
+    let message = Message::Insert { key: request.k, value: request.v };
+    let message = BorshSerialize::try_to_vec(&message).unwrap();
+    let _ = mailbox.send(message).await.unwrap();
+    Ok(reply::json(&"OK".to_string()))
 }
 
 async fn get(store: HashStore, key: String) -> Result<impl warp::Reply, Infallible> {
@@ -140,7 +140,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let put_kv = warp::post()
         .and(warp::path("put"))
         .and(with_mailbox(mailbox.clone()))
-        .and(warp::body::json())
+        .and(warp::body::bytes())
         .and_then(put);
 
     let get_kv = warp::get()

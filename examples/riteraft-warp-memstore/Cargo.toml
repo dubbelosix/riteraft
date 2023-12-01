@@ -19,3 +19,5 @@ slog-stdlog = "4"
 structopt = "0.3"
 tokio = { version = "1", features = ["full"] }
 warp = "0.3"
+borsh = "0.9"
+bytes = "1.0"
