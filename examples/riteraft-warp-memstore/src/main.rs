@@ -28,6 +28,12 @@ struct Options {
     web_server: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct PutRequest {
+    k: String,
+    v: String,
+}
+
 #[derive(Serialize, Deserialize)]
 pub enum Message {
     Insert { key: String, value: String },
@@ -84,10 +90,9 @@ fn with_store(store: HashStore) -> impl Filter<Extract = (HashStore,), Error = I
 
 async fn put(
     mailbox: Arc<Mailbox>,
-    key: String,
-    value: String,
+    body: PutRequest,
 ) -> Result<impl warp::Reply, Infallible> {
-    let message = Message::Insert { key, value };
+    let message = Message::Insert { key: body.k, value: body.v };
     let message = serialize(&message).unwrap();
     let result = mailbox.send(message).await.unwrap();
     let result: String = deserialize(&result).unwrap();
@@ -132,10 +137,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let put_kv = warp::get()
-        .and(warp::path!("put" / String / String))
+    let put_kv = warp::post()
+        .and(warp::path("put"))
         .and(with_mailbox(mailbox.clone()))
-        .and_then(|key, value, mailbox: Arc<Mailbox>| put(mailbox, key, value));
+        .and(warp::body::json())
+        .and_then(put);
 
     let get_kv = warp::get()
         .and(warp::path!("get" / String))
